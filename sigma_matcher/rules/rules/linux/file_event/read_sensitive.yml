@@ -1,0 +1,34 @@
+title: Read Sensitive File by Untrusted Process
+id: a1b2c3d4-5678-90ab-cdef-1234567890ab
+status: test
+description: "비신뢰 프로그램이 /etc/shadow 와 같은 민감 파일을 읽으려고 시도하는 행위를 탐지합니다."
+author: 당신의 이름
+date: 2025-06-08
+references:
+  - https://falco.org/docs/rules/files-and-filesystems/#read-sensitive-file-untrusted
+logsource:
+  product: linux
+  service: falco
+
+detection:
+  selection:
+    falco.rule: "Read sensitive file untrusted"
+    TargetFilename: "/etc/shadow"
+  condition: selection
+
+fields:
+  - falco.rule
+  - Image
+  - TargetFilename
+  - user.name
+  - proc.cmdline
+
+falsepositives:
+  - root 계정이 정상적으로 시스템 파일을 읽는 경우
+
+level: high
+tags:
+  - attack.credential-access
+  - filesystem
+  - custom
+

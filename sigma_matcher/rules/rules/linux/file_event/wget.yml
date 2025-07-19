@@ -1,0 +1,15 @@
+title: Wget Creating Files in Tmp Directory
+id: wget_open_tmp
+logsource:
+  product: linux
+detection:
+  sel_proc:
+    proc.name: wget
+  sel_tmp:
+    fd.name|startswith: '/tmp/'
+  sel_vartmp:
+    fd.name|startswith: '/var/tmp/'
+  condition: sel_proc and (sel_tmp or sel_vartmp)
+level: warning
+tags: [command, file_activity, custom]
+

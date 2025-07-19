@@ -1,0 +1,24 @@
+title: Detect LS Command Execution (Falco)
+id: 12345678-aaaa-bbbb-cccc-1234567890ab
+status: test
+description: Detects execution of the 'ls' command on Linux systems using Falco events
+author: Your Name
+date: 2025-06-07
+logsource:
+  product: linux
+  service: falco
+detection:
+  selection:
+    proc.name: ls
+  condition: selection
+fields:
+  - proc.name
+  - proc.pid
+  - user.name
+  - container.id
+level: medium
+tags:
+  - command
+  - falco
+  - custom
+
