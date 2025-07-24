@@ -21,9 +21,9 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
 
   | 메서드  | 경로                   | 설명                                          |
   | ---- | -------------------- | ------------------------------------------- |
-  | GET  | `/traces`            | 기간·개수·정렬 기준으로 TraceID 목록 반환                 |
+  | GET  | `/traces`            | TraceID 목록 반환                 |
   | GET  | `/traces/{trace_id}` | 특정 TraceID의 모든 스팬 반환                        |
-  | GET  | `/stats/timeline`    | 지정 구간을 버킷(interval) 단위 히스토그램으로 반환           |
+  | GET  | `/stats/timeline`    | 지정 구간 버킷(interval) 단위 Trace 개수 반환           |
   | GET  | `/healthz`           | OpenSearch 연결 상태 확인                         |
 
 
