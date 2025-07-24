@@ -15,8 +15,20 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
 * **sigma\_matcher**
   OTLP gRPC 서버(55680). `sigma_matcher/rules/rules/windows` 디렉터리의 YAML 룰을 메모리에 올린 뒤 Collector에서 온 이벤트에 대해 룰 일치 여부를 판정하고, 매칭 시 `sigma.alert` 태그를 주입
 
+* **trace\_api\_server (FastAPI + OpenSearch‑py)**
+  OpenSearch에 저장된 Jaeger 스팬 인덱스(`jaeger-span-*`)를 REST API로 노출하는 경량 서비스.
+  주요 엔드포인트
+
+  | 메서드  | 경로                   | 설명                                          |
+  | ---- | -------------------- | ------------------------------------------- |
+  | GET  | `/traces`            | 기간·개수·정렬 기준으로 TraceID 목록 반환                 |
+  | GET  | `/traces/{trace_id}` | 특정 TraceID의 모든 스팬 반환                        |
+  | GET  | `/stats/timeline`    | 지정 구간을 버킷(interval) 단위 히스토그램으로 반환           |
+  | GET  | `/healthz`           | OpenSearch 연결 상태 확인                         |
+
+
 * **OpenSearch 3.1 + Jaeger 1.56** (Docker Compose)
-  ‑ OpenSearch 두 노드 클러스터가 Jaeger 인덱스(jaeger‑span‑*, jaeger‑service‑*)를 저장소로 제공
+  ‑ OpenSearch 두 노드 클러스터가 Jaeger 인덱스(jaeger‑span‑*)를 저장소로 제공
   ‑ OpenSearch Dashboards에서 **Observability ▶ Trace Analytics** 앱으로 Jaeger 인덱스를 시각화
 
 ---
@@ -29,7 +41,7 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
 ```powershell
 # 이벤트 필터가 포함된 구성 적용 후 실행
 Sysmon64.exe -i -l -n -accepteula
-Sysmon64.exe -c sysmonconfig-export.xml 
+Sysmon64.exe -c sysmonconfig-export.xml
 ```
 
 3. **Go 1.23**, **Docker & Compose** 설치
@@ -57,6 +69,12 @@ otelcol-contrib --config otel-collector-config.yaml
 # 4) OpenSearch · Jaeger · Dashboards (Docker)
 docker compose pull
 docker‑compose up -d
+
+# 5) Trace API Server (FastAPI)
+cd pythonapi
+python -m venv venv && venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ### 옵션 B : 소스 빌드
@@ -72,7 +90,6 @@ git clone https://github.com/shhhlee/EventAgent.git
 cd sigma_matcher
 go mod tidy
 go build -o sigma_matcher.exe main.go
-//안되면 go build -o sigma_matcher main.go 후 sigma_matcher.exe로 확장자 변경
 ./sigma_matcher.exe
 
 # 3) OTEL Collector
@@ -82,13 +99,19 @@ otelcol-contrib --config otel-collector-config.yaml
 # 4) Docker Compose (OpenSearch · Jaeger · Dashboards)
 docker compose pull
 docker‑compose up -d
+
+# 5) Trace API Server (FastAPI)
+cd pythonapi
+python -m venv venv && venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ---
 
 ## OpenSearch 설명 & 템플릿
 
-* **인덱스 템플릿**: Jaeger Collector가 처음 스팬을 적재할 때 자동으로 `jaeger-span-*`, `jaeger-service-*` 인덱스와 템플릿을 생성합니다.
+* **인덱스 템플릿**: Jaeger Collector가 처음 스팬을 적재할 때 자동으로 `jaeger-span-*` 인덱스와 템플릿을 생성합니다.
 
 ---
 
@@ -112,6 +135,4 @@ powershell.exe -ExecutionPolicy Bypass -File .\Test\LongTrace.ps1
 * **SysmonETWexporter** → 실시간 이벤트 출력
 * **OTEL Collector** → 데이터 표준화 및 전송 확인
 * **sigma\_matcher** → "⚠️ Sigma 매칭" 메시지 확인
-* **Jaeger UI(`http://localhost:16686`) / Dashboards(`http://localhost:5601`)** → 이벤트 확인 및 트레이스,스팬 조회
-
----
+* **Jaeger UI(`http://localhost:16686`) / Dashboards(`http://localhost:5601`) / Trace API(`(http://localhost:8080/docs)`)** → 이벤트 확인 및 트레이스·REST 호출 테스트
