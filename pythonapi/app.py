@@ -147,6 +147,12 @@ def timeline(
         for b in res["aggregations"]["events_over_time"]["buckets"]
     ]
 
+# ─── 4) OpenSearch DSL ────────────────────────────────────
+@app.post("/search", summary="OpenSearch DSL")
+def dsl_search(body: Dict[str, Any]):
+    res = _os_query(TRACE_INDEX, body)
+    return res["hits"]
+
 # ─── 헬스체크 ──────────────────────────────────────────────────
 @app.get("/healthz")
 def health():
