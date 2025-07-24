@@ -71,9 +71,8 @@ git clone https://github.com/shhhlee/EventAgent.git
 # 2) sigma_matcher
 cd sigma_matcher
 go mod tidy
-go build -o sigma_matcher.exe main.go
-//안되면 go build -o sigma_matcher main.go 후 sigma_matcher.exe로 확장자 변경
-./sigma_matcher.exe
+go build -o sigma_matcher main.go
+./sigma_matcher
 
 # 3) OTEL Collector
 압축 해제
