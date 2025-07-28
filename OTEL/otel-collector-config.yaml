@@ -25,7 +25,6 @@ processors:
           - 'set(attributes["TargetFilename"], attributes["TargetFilename"]) where attributes["TargetFilename"] != nil'
           - 'set(attributes["TargetFilename"], attributes["FileName"]) where attributes["TargetFilename"] == nil and attributes["FileName"] != nil'
           - 'set(attributes["TargetFilename"], attributes["FilePath"]) where attributes["TargetFilename"] == nil and attributes["FilePath"] != nil'
-          - 'set(attributes["parentSpanID"], span.parent_span_id) where IsRootSpan() == false'
 
   # ★ sigma.alert 태그가 달린 트레이스만 KEEP, 그 외는 DROP
   tail_sampling/alerts:

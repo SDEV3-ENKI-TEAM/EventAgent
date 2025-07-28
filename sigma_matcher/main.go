@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -122,6 +123,12 @@ func (rt *traceRouter) rewriteSpan(sp *tracepb.Span) {
 		rt.procs[pid] = info
 	}
 	if isRoot {
+		// 이미 이 PID 에 대한 루트(spanID)가 map에 존재한다면 → 중복 루트
+		if len(info.spanID) != 0 && !bytes.Equal(info.spanID, sp.SpanId) {
+			return
+		}
+
+		// 아직 루트가 없을 때만 저장
 		info.spanID = sp.SpanId
 		rt.procs[pid] = info
 	}
