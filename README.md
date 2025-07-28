@@ -6,7 +6,7 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
 
 ## 구성 요소
 
-* **SysmonETWexporter**
+* **SysmonAgent**
   Windows Sysmon ETW(Event Tracing for Windows)에서 보안 이벤트를 수집하여 OTEL Collector(포트 4319)로 OTLP Trace 전송
 
 * **otel-collector**
@@ -56,8 +56,8 @@ Sysmon64.exe -c sysmonconfig-export.xml
 # 0) 저장소 클론
 git clone https://github.com/shhhlee/EventAgent.git
 
-# 1) SysmonETWexporter
-./SysmonETWexporter.exe
+# 1) SysmonAgent 관리자 권한으로 실행
+./SysmonAgent.exe
 
 # 2) sigma_matcher
 ./sigma_matcher.exe
@@ -83,8 +83,8 @@ uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 # 0) 저장소 클론
 git clone https://github.com/shhhlee/EventAgent.git
 
-# 1) SysmonETWexporter
-프로젝트 파일 압축 해제 후 빌드
+# 1) SysmonAgent
+프로젝트 파일 압축 해제 후 "win-x64\publish\SysmonETWexporter.exe" 관리자 권한으로 실행행
 
 # 2) sigma_matcher
 cd sigma_matcher
