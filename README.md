@@ -7,15 +7,19 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
 ## 구성 요소
 
 * **SysmonAgent**
+
   Windows Sysmon ETW(Event Tracing for Windows)에서 보안 이벤트를 수집하여 OTEL Collector(포트 4319)로 OTLP Trace 전송
 
 * **otel-collector**
+
   수신한 스팬의 필드를 Sigma 룰 매칭에 맞게 **표준화(transform)** ▶ **Sigma Matcher(55680)** 로 전달 ▶ 매칭 결과가 포함된 스팬을 **Jaeger / 파일 / 디버그** 로 후단 전송
 
 * **sigma\_matcher**
+
   OTLP gRPC 서버(55680). `sigma_matcher/rules/rules/windows` 디렉터리의 YAML 룰을 메모리에 올린 뒤 Collector에서 온 이벤트에 대해 룰 일치 여부를 판정하고, 매칭 시 `sigma.alert` 태그를 주입
 
 * **trace\_api\_server (FastAPI + OpenSearch‑py)**
+
   OpenSearch에 저장된 Jaeger 스팬 인덱스(`jaeger-span-*`)를 REST API로 노출하는 경량 서비스.
   주요 엔드포인트
 
