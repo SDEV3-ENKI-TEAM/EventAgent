@@ -88,7 +88,7 @@ uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 git clone https://github.com/shhhlee/EventAgent.git
 
 # 1) SysmonAgent
-프로젝트 파일 압축 해제 후 "win-x64\publish\SysmonETWexporter.exe" 관리자 권한으로 실행행
+프로젝트 파일 압축 해제 후 "win-x64\publish\SysmonETWexporter.exe" 관리자 권한으로 실행
 
 # 2) sigma_matcher
 cd sigma_matcher
