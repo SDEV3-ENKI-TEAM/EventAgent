@@ -122,10 +122,9 @@ uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 ## Trace Analytics에서 트레이스 확인
 
 1. 브라우저에서 **OpenSearch Dashboards** 접속 → `http://localhost:5601`
-2. 좌측 메뉴 **Observability ▶ Trace Analytics** 선택
-3. 첫 진입 시 "데이터 소스 추가" 대화상자가 뜨면 **`jaeger-span-*`** 패턴을 추가하고 저장
-4. **Traces** 탭에서 최근 트레이스 리스트가 나타나며, 원하는 Trace ID를 클릭해 세부 스팬 확인
-5. **Sigma Alert**가 주입된 스팬은 Errors가 Yes로 나타남
+2. 좌측 메뉴 **Observability ▶ Trace** 선택
+3. **Trace** 탭에서 Data prepper -> Jaeger로 변경 최근 트레이스 리스트가 나타나며, 원하는 Trace ID를 클릭해 세부 스팬 확인
+4. **Sigma Alert**가 주입된 스팬은 Errors가 Yes로 나타남
 
 ---
 
