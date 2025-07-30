@@ -145,19 +145,35 @@ func (rt *traceRouter) rewriteSpan(sp *tracepb.Span) {
 /* ─── Sigma 매칭 + 표시 ──────────────────────────────── */
 func (rt *traceRouter) applySigma(sp *tracepb.Span) {
 	ev := spanToEvent(sp)
+
 	if matches, ok := rt.rs.EvalAll(ev); ok && len(matches) > 0 {
-		title := matches[0].Title
+		rule := matches[0] // 첫 번째 일치 규칙
+		// title := rule.Title
+		rid := rule.ID
+
+		// 규칙 ID
 		sp.Attributes = append(sp.Attributes, &commonpb.KeyValue{
-			Key: "sigma.alert",
-			Value: &commonpb.AnyValue{
-				Value: &commonpb.AnyValue_StringValue{StringValue: title},
-			},
+			Key:   "sigma.alert",
+			Value: strVal(rid),
 		})
+		// // 규칙 제목
+		// sp.Attributes = append(sp.Attributes, &commonpb.KeyValue{
+		// 	Key:   "sigma.rule_title",
+		// 	Value: strVal(title),
+		// })
+
 		sp.Status = &tracepb.Status{
 			Code:    tracepb.Status_STATUS_CODE_ERROR,
 			Message: "Sigma rule matched",
 		}
-		log.Printf("⚠️ Sigma 매칭! trace=%x span=%x rule=%q", sp.TraceId, sp.SpanId, title)
+		log.Printf("⚠️ Sigma 매칭! trace=%x span=%x rule=%s",
+			sp.TraceId, sp.SpanId, rid)
+	}
+}
+
+func strVal(s string) *commonpb.AnyValue {
+	return &commonpb.AnyValue{
+		Value: &commonpb.AnyValue_StringValue{StringValue: s},
 	}
 }
 
