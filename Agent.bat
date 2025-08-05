@@ -21,7 +21,7 @@ start "Python API Server" cmd /k ^
 :: ────────────────────────────────
 :: 5. Jaeger
 start "Jaeger" cmd /k ^
-  "cd ""%BASEDIR%\jaeger"" && set SPAN_STORAGE_TYPE=opensearch&& set ES_TAGS_AS_FIELDS_ALL=true&& set OTEL_TRACES_SAMPLER=always_off&& .\jaeger-all-in-one.exe --collector.otlp.grpc.host-port=:4317 --collector.otlp.http.host-port=:4318 --es.server-urls=https://search-eventagentservice-px5xppytlfm2nbijkhrd2z7lp4.ap-northeast-2.es.amazonaws.com  --es.tls.enabled=true --es.num-replicas=2 --es.username=enki_sdev --es.password=Enki_sdev1234"
+  "cd ""%BASEDIR%\jaeger"" && set SPAN_STORAGE_TYPE=opensearch&& set ES_TAGS_AS_FIELDS_ALL=true&& set OTEL_TRACES_SAMPLER=always_off&& .\jaeger-all-in-one.exe --collector.otlp.grpc.host-port=:4317 --collector.otlp.http.host-port=:4318 --es.server-urls=https://search-eventagentservice-px5xppytlfm2nbijkhrd2z7lp4.ap-northeast-2.es.amazonaws.com  --es.tls.enabled=true --es.num-replicas=2 --es.username=enki_sdev --es.password=macbyh-nybpo0-Suxsyw"
 
 :: ────────────────────────────────
 :: 6. SysmonAgent 
