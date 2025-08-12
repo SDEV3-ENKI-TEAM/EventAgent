@@ -31,9 +31,11 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
   | GET  | `/healthz`           | OpenSearch 연결 상태 확인                         |
 
 
-* **OpenSearch 3.1 + Jaeger 1.56** (Docker Compose)
-  ‑ OpenSearch 두 노드 클러스터가 Jaeger 인덱스(jaeger‑span‑*)를 저장소로 제공
-  ‑ OpenSearch Dashboards에서 **Observability ▶ Trace Analytics** 앱으로 Jaeger 인덱스를 시각화
+* **Kafka, OpenSearch, Jaeger** (Docker Compose)
+  ‑ Kafka: Collector로부터 raw_trace 토픽으로 데이터를 수신하는 메시지 큐 역할
+  - OpenSearch: Jaeger 인덱스(jaeger-span-*)의 주 저장소로 사용
+  - Jaeger: OpenSearch를 백엔드로 사용하여 수집된 Trace를 시각화
+  ‑ OpenSearch Dashboards에서 **Observability ▶ Trace ** 트레이스 데이터 확인 가
 
 ---
 
@@ -70,11 +72,14 @@ git clone https://github.com/shhhlee/EventAgent.git
 압축 해제
 otelcol-contrib --config otel-collector-config.yaml
 
-# 4) OpenSearch · Jaeger · Dashboards (Docker)
+# 4) Docker 기반 서비스 실행 (Kafka, Jaeger, OpenSearch)
 docker compose pull
 docker‑compose up -d
 
-# 5) Trace API Server (FastAPI)
+# 5) Kafka 토픽 생성
+docker exec -it kafka kafka-topics --create --topic raw_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+
+# 6) Trace API Server (FastAPI)
 cd pythonapi
 python -m venv venv && venv\Scripts\activate
 pip install -r requirements.txt
@@ -100,9 +105,12 @@ go build -o sigma_matcher.exe main.go
 압축 해제
 otelcol-contrib --config otel-collector-config.yaml
 
-# 4) Docker Compose (OpenSearch · Jaeger · Dashboards)
+# 4) Docker 기반 서비스 실행 (Kafka, Jaeger, OpenSearch)
 docker compose pull
 docker‑compose up -d
+
+# 5) Kafka 토픽 생성
+docker exec -it kafka kafka-topics --create --topic raw_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
 
 # 5) Trace API Server (FastAPI)
 cd pythonapi
@@ -139,3 +147,4 @@ powershell.exe -ExecutionPolicy Bypass -File .\Test\LongTrace.ps1
 * **OTEL Collector** → 데이터 표준화 및 전송 확인
 * **sigma\_matcher** → "⚠️ Sigma 매칭" 메시지 확인
 * **Jaeger UI(`http://localhost:16686`) / Dashboards(`http://localhost:5601`) / Trace API(`(http://localhost:8080/docs)`)** → 이벤트 확인 및 트레이스·REST 호출 테스트
+* **Kafka 토픽에서 실시간 데이터 확인** → 터미널에서 docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw_trace 명령어 실행 후 실시간 데이터 확인
