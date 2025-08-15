@@ -32,10 +32,10 @@ Sysmon이 생성한 보안 이벤트를 OpenTelemetry Collector를 통해 Sigma 
 
 
 * **Kafka, OpenSearch, Jaeger** (Docker Compose)
-  ‑ Kafka: Collector로부터 raw_trace 토픽으로 데이터를 수신하는 메시지 큐 역할
+  - Kafka: Collector로부터 raw_trace 토픽으로 실시간 데이터를 수신
   - OpenSearch: Jaeger 인덱스(jaeger-span-*)의 주 저장소로 사용
-  - Jaeger: OpenSearch를 백엔드로 사용하여 수집된 Trace를 시각화
-  ‑ OpenSearch Dashboards에서 **Observability ▶ Trace ** 트레이스 데이터 확인 가
+  - Jaeger: 수집된 Trace를 시각화
+  - OpenSearch Dashboards: Observability ▶ Trace에서 트레이스 데이터 확인 가능
 
 ---
 
@@ -78,6 +78,8 @@ docker‑compose up -d
 
 # 5) Kafka 토픽 생성
 docker exec -it kafka kafka-topics --create --topic raw_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+# Kafka 실시간 데이터 확인
+docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw_trace
 
 # 6) Trace API Server (FastAPI)
 cd pythonapi
@@ -111,6 +113,8 @@ docker‑compose up -d
 
 # 5) Kafka 토픽 생성
 docker exec -it kafka kafka-topics --create --topic raw_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+# Kafka 실시간 데이터 확인
+docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw_trace
 
 # 5) Trace API Server (FastAPI)
 cd pythonapi
