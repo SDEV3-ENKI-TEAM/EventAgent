@@ -578,26 +578,48 @@ func (rt *traceRouter) applySigma(sp *tracepb.Span) {
 	ev := spanToEvent(sp)
 
 	if matches, ok := rt.rs.EvalAll(ev); ok && len(matches) > 0 {
-		rule := matches[0] // 첫 번째 일치 규칙
-		title := rule.Title
-		rid := rule.ID
+		ids := make([]string, 0, len(matches))
+		titles := make([]string, 0, len(matches))
+		for _, m := range matches {
+			ids = append(ids, m.ID)
+			titles = append(titles, m.Title)
+		}
 
 		sp.Attributes = append(sp.Attributes,
-			&commonpb.KeyValue{Key: "sigma.alert", Value: strVal(rid)},
-			&commonpb.KeyValue{Key: "sigma.rule_title", Value: strVal(title)},
+			// 전체 규칙 배열 + 개수
+			&commonpb.KeyValue{Key: "sigma.alert", Value: arrStrVal(ids)},
+			&commonpb.KeyValue{Key: "sigma.rule_title", Value: arrStrVal(titles)},
+			&commonpb.KeyValue{Key: "sigma.match_count", Value: intVal(int64(len(matches)))},
 		)
+
 		sp.Status = &tracepb.Status{
 			Code:    tracepb.Status_STATUS_CODE_ERROR,
-			Message: "Sigma rule matched",
+			Message: fmt.Sprintf("Sigma rules matched: %d", len(matches)),
 		}
-		log.Printf("⚠️ Sigma 매칭! trace=%x span=%x rule=%s title=%s",
-			sp.TraceId, sp.SpanId, rid, title)
+
+		// 로그는 요약(개수 + ID 리스트)
+		log.Printf("⚠️ Sigma 매칭 %d건! trace=%x span=%x rules=%v",
+			len(matches), sp.TraceId, sp.SpanId, titles)
 	}
 }
 
 func strVal(s string) *commonpb.AnyValue {
 	return &commonpb.AnyValue{
 		Value: &commonpb.AnyValue_StringValue{StringValue: s},
+	}
+}
+
+func arrStrVal(ss []string) *commonpb.AnyValue {
+	arr := &commonpb.ArrayValue{Values: make([]*commonpb.AnyValue, len(ss))}
+	for i, s := range ss {
+		arr.Values[i] = strVal(s)
+	}
+	return &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: arr}}
+}
+
+func intVal(n int64) *commonpb.AnyValue {
+	return &commonpb.AnyValue{
+		Value: &commonpb.AnyValue_IntValue{IntValue: n},
 	}
 }
 

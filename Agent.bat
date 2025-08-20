@@ -6,7 +6,7 @@ if "%BASEDIR:~-1%"=="\" set "BASEDIR=%BASEDIR:~0,-1%"
 
 :: ────────────────────────────────
 :: 2. Sigma Matcher
-start "Sigma Matcher" cmd /k "cd ""%BASEDIR%\sigma_matcher"" && sigma_matcher.exe"
+start "Sigma Matcher" cmd /k "cd ""%BASEDIR%\sigma_matcher"" && sigma_matcher.exe -ttl=1m -maxspans=100 -interval=1m"
 
 :: ────────────────────────────────
 :: 3. OpenTelemetry Collector
