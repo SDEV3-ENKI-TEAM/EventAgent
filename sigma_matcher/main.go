@@ -32,13 +32,15 @@ import (
 /* ─── CLI 옵션 ─────────────────────────────────────────── */
 var (
 	listen   = flag.String("listen", ":55680", "Collector→Router 수신 포트")
-	forward  = flag.String("forward", "localhost:4320", "Router→Collector 전송 포트")
+	forward  = flag.String("forward", "localhost:4320", "Collector 전송 주소 (완결 trace)")
+	tmptrace = flag.String("tmptrace", "localhost:4321", "Collector 전송 주소 (미완 trace)")
 	rulesDir = flag.String("rules", "rules/rules/windows", "Sigma 룰 디렉터리")
 	verbose  = flag.Bool("v", false, "디버그 로그")
 
 	// 버퍼/보호 옵션
-	traceTTL         = flag.Duration("trace_ttl", 5*time.Minute, "루트 종료 없을 시 Trace TTL(초과시 전송)")
-	maxSpansPerTrace = flag.Int("max_spans", 1000, "Trace당 최대 스팬 수(초과시 전송)")
+	traceTTL         = flag.Duration("ttl", 0, "루트 종료 없을 시 Trace TTL(초과시 전송)")
+	maxSpansPerTrace = flag.Int("maxspans", 0, "Trace당 최대 스팬 수(초과시 전송)")
+	snapshotInterval = flag.Duration("interval", 0, "미완 트레이스 주기적 전송 간격")
 )
 
 /* ─── Sigma Event 래퍼 ─────────────────────────────────── */
@@ -77,6 +79,8 @@ type traceBuffer struct {
 	terminatedPIDs map[int]struct{} // 종료 스팬을 본 PID
 	rootPID        int
 	exported       map[resKey]map[scopeKey]int
+	lastSnapshot   time.Time
+	nextSnapshot   time.Time
 }
 
 type traceRouter struct {
@@ -85,6 +89,7 @@ type traceRouter struct {
 	procs     map[int]procInfo
 	rs        *sigma.Ruleset
 	client    collectortracepb.TraceServiceClient
+	tmpClient collectortracepb.TraceServiceClient
 	buffers   map[string]*traceBuffer
 	ttlStopCh chan struct{}
 }
@@ -93,25 +98,38 @@ type traceRouter struct {
 func main() {
 	flag.Parse()
 
+	log.Printf("[Options] ttl=%v (0=off), spans=%d (0=off), interval=%v (0=off)",
+		*traceTTL, *maxSpansPerTrace, *snapshotInterval)
+
 	rs, err := sigma.NewRuleset(sigma.Config{Directory: []string{*rulesDir}})
 	if err != nil {
 		log.Fatalf("Sigma 룰 로드 실패: %v", err)
 	}
 	log.Printf("✅ Sigma 룰 %d개 로드", len(rs.Rules))
 
-	conn, err := grpc.Dial(*forward, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// 완료 trace용 연결
+	connMain, err := grpc.Dial(*forward, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Collector 연결 실패: %v", err)
+		log.Fatalf("forward Collector 연결 실패: %v", err)
+	}
+	// 미완 trace용 연결
+	connTmp, err := grpc.Dial(*tmptrace, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("tmptrace Collector 연결 실패: %v", err)
 	}
 
 	router := &traceRouter{
 		procs:     make(map[int]procInfo),
 		rs:        rs,
-		client:    collectortracepb.NewTraceServiceClient(conn),
+		client:    collectortracepb.NewTraceServiceClient(connMain),
+		tmpClient: collectortracepb.NewTraceServiceClient(connTmp),
 		buffers:   make(map[string]*traceBuffer),
 		ttlStopCh: make(chan struct{}),
 	}
-	go router.ttlGC()
+	// TTL 또는 스냅샷 중 하나라도 활성화되어 있으면 GC 루프 가동
+	if *traceTTL > 0 || *snapshotInterval > 0 {
+		go router.ttlGC()
+	}
 
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -120,7 +138,7 @@ func main() {
 	s := grpc.NewServer()
 	collectortracepb.RegisterTraceServiceServer(s, router)
 
-	log.Printf("🚏 Router 수신 %s ➜ 전송 %s (모든 PID 종료 시 flush)", *listen, *forward)
+	log.Printf("🚏 Router 수신 %s ➜ 전송 %s", *listen, *forward)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Serve 오류: %v", err)
 	}
@@ -220,7 +238,7 @@ func (rt *traceRouter) bufferSpanAndUpdatePID(
 		}
 	}
 
-	if tb.spanCount > *maxSpansPerTrace {
+	if *maxSpansPerTrace > 0 && tb.spanCount > *maxSpansPerTrace {
 		return false, true
 	}
 	// 활성 PID가 하나도 없으면(= 모든 PID 종료) flush
@@ -230,6 +248,7 @@ func (rt *traceRouter) bufferSpanAndUpdatePID(
 	return false, false
 }
 
+// 최종 플러시: 4320(forward)으로 "전체 트레이스를 한 번에 전송한 뒤 버퍼/매핑 정리
 func (rt *traceRouter) flushTrace(traceID []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -237,23 +256,76 @@ func (rt *traceRouter) flushTrace(traceID []byte) {
 		}
 	}()
 
-	// 1) 먼저 미전송 구간만 안전하게 송출
+	// 1) 먼저 tmptrace로 남은 델타를 마저 보냄
 	rt.exportTraceDelta(traceID)
 
-	// 2) 버퍼 제거
+	// 2) forward로 전체(full) 트레이스 전송
 	rt.mu.Lock()
 	key := hex(traceID)
-	tb, ok := rt.buffers[key]
-	if ok {
-		delete(rt.buffers, key)
+	tb := rt.buffers[key]
+	if tb == nil {
+		rt.mu.Unlock()
+		return
 	}
+
+	resKeys := make([]resKey, 0, len(tb.byResScope))
+	for rk := range tb.byResScope {
+		resKeys = append(resKeys, rk)
+	}
+	sort.Slice(resKeys, func(i, j int) bool { return resKeys[i] < resKeys[j] })
+
+	out := make([]*tracepb.ResourceSpans, 0, len(resKeys))
+	for _, rk := range resKeys {
+		scopeMap := tb.byResScope[rk]
+
+		scopeKeys := make([]scopeKey, 0, len(scopeMap))
+		for sk := range scopeMap {
+			scopeKeys = append(scopeKeys, sk)
+		}
+		sort.Slice(scopeKeys, func(i, j int) bool {
+			if scopeKeys[i].Name == scopeKeys[j].Name {
+				return scopeKeys[i].Version < scopeKeys[j].Version
+			}
+			return scopeKeys[i].Name < scopeKeys[j].Name
+		})
+
+		rsp := &tracepb.ResourceSpans{}
+		if meta := tb.resMeta[rk]; meta != nil {
+			rsp.Resource = proto.Clone(meta).(*resourcepb.Resource)
+		}
+		for _, sk := range scopeKeys {
+			all := scopeMap[sk]
+			if len(all) == 0 {
+				continue
+			}
+
+			ss := &tracepb.ScopeSpans{
+				Scope: tb.scopeMeta[sk],
+				Spans: make([]*tracepb.Span, len(all)),
+			}
+			copy(ss.Spans, all)
+			rsp.ScopeSpans = append(rsp.ScopeSpans, ss)
+		}
+		if len(rsp.ScopeSpans) > 0 {
+			out = append(out, rsp)
+		}
+	}
+	total := tb.spanCount
 	rt.mu.Unlock()
 
-	if *verbose && ok {
-		log.Printf("✅ final flush closed trace=%s spans=%d", key, tb.spanCount)
+	if len(out) > 0 {
+		req := &collectortracepb.ExportTraceServiceRequest{ResourceSpans: out}
+		if _, err := rt.client.Export(context.Background(), req); err != nil {
+			log.Printf("❌ final export 실패 trace=%s → forward: %v", key, err)
+		} else if *verbose {
+			log.Printf("✅ final export 완료 trace=%s → forward (spans=%d)", key, total)
+		}
 	}
 
-	// 3) PID 매핑 정리
+	// 3) 버퍼/매핑 정리
+	rt.mu.Lock()
+	delete(rt.buffers, key)
+	rt.mu.Unlock()
 	rt.cleanupPIDsForTrace(traceID)
 }
 
@@ -274,18 +346,54 @@ func (rt *traceRouter) ttlGC() {
 		select {
 		case <-ticker.C:
 			now := time.Now()
-			rt.mu.RLock()
-			var expired [][]byte
-			for key, tb := range rt.buffers {
-				if now.Sub(tb.lastSeen) > *traceTTL {
-					expired = append(expired, unhex(key))
+
+			// 1) TTL 기반 전송 (trace_ttl > 0일 때만)
+			if *traceTTL > 0 {
+				rt.mu.RLock()
+				var ttlTargets [][]byte
+				for key, tb := range rt.buffers {
+					if now.Sub(tb.lastSeen) > *traceTTL {
+						ttlTargets = append(ttlTargets, unhex(key))
+					}
+				}
+				rt.mu.RUnlock()
+				for _, tid := range ttlTargets {
+					log.Printf("⏰ TTL trace 전송=%x", tid)
+					rt.exportTraceDelta(tid)
 				}
 			}
-			rt.mu.RUnlock()
-			for _, tid := range expired {
-				// log.Printf("⏰ TTL delta export trace=%x", tid)
-				rt.exportTraceDelta(tid)
+
+			// 2) 스냅샷 주기 전송 (snapshot_interval > 0일 때만)
+			if *snapshotInterval > 0 {
+				rt.mu.RLock()
+				var snapshotTargets [][]byte
+				for key, tb := range rt.buffers {
+					if len(tb.activePIDs) == 0 && len(tb.terminatedPIDs) > 0 {
+						continue
+					}
+					if tb.lastSnapshot.IsZero() {
+						if now.Sub(tb.firstSeen) >= *snapshotInterval {
+							snapshotTargets = append(snapshotTargets, unhex(key))
+						}
+						continue
+					}
+					if !tb.nextSnapshot.IsZero() && !now.Before(tb.nextSnapshot) {
+						snapshotTargets = append(snapshotTargets, unhex(key))
+					}
+				}
+				rt.mu.RUnlock()
+
+				for _, tid := range snapshotTargets {
+					rt.exportTraceDelta(tid)
+					rt.mu.Lock()
+					if tb := rt.buffers[hex(tid)]; tb != nil {
+						tb.lastSnapshot = time.Now()
+						tb.nextSnapshot = tb.lastSnapshot.Add(*snapshotInterval)
+					}
+					rt.mu.Unlock()
+				}
 			}
+
 		case <-rt.ttlStopCh:
 			return
 		}
@@ -310,13 +418,10 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		}
 		return
 	}
-
-	// ★ 패치: top-level map이 nil일 수 있으므로 반드시 초기화
 	if tb.exported == nil {
 		tb.exported = make(map[resKey]map[scopeKey]int)
 	}
 
-	// resKey 목록 스냅샷
 	resKeys := make([]resKey, 0, len(tb.byResScope))
 	for rk := range tb.byResScope {
 		resKeys = append(resKeys, rk)
@@ -324,7 +429,6 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 	sort.Slice(resKeys, func(i, j int) bool { return resKeys[i] < resKeys[j] })
 
 	out := make([]*tracepb.ResourceSpans, 0, len(resKeys))
-
 	for _, rk := range resKeys {
 		scopeMap := tb.byResScope[rk]
 
@@ -343,14 +447,12 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		if meta := tb.resMeta[rk]; meta != nil {
 			rsp.Resource = proto.Clone(meta).(*resourcepb.Resource)
 		}
-
 		for _, sk := range scopeKeys {
 			all := scopeMap[sk]
 			if len(all) == 0 {
 				continue
 			}
 
-			// ★ 패치: child map도 안전하게 보장
 			if tb.exported[rk] == nil {
 				tb.exported[rk] = make(map[scopeKey]int)
 			}
@@ -363,7 +465,6 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 			}
 
 			delta := all[from:]
-
 			ss := &tracepb.ScopeSpans{
 				Scope: tb.scopeMeta[sk],
 				Spans: make([]*tracepb.Span, len(delta)),
@@ -371,16 +472,13 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 			copy(ss.Spans, delta)
 			rsp.ScopeSpans = append(rsp.ScopeSpans, ss)
 
-			// 워터마크 업데이트
 			tb.exported[rk][sk] = len(all)
 		}
-
 		if len(rsp.ScopeSpans) > 0 {
 			out = append(out, rsp)
 		}
 	}
-
-	rt.mu.Unlock() // 네트워크는 락 밖에서
+	rt.mu.Unlock()
 
 	if len(out) == 0 {
 		if *verbose {
@@ -388,14 +486,24 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		}
 		return
 	}
-
 	req := &collectortracepb.ExportTraceServiceRequest{ResourceSpans: out}
-	if _, err := rt.client.Export(context.Background(), req); err != nil {
-		log.Printf("❌ delta export 실패 trace=%s: %v", key, err)
+	if _, err := rt.tmpClient.Export(context.Background(), req); err != nil {
+		log.Printf("❌ delta export 실패 trace=%s → tmptrace: %v", key, err)
 		return
 	}
 	if *verbose {
-		log.Printf("✅ delta export 완료 trace=%s", key)
+		log.Printf("✅ delta export 완료 trace=%s → tmptrace", key)
+	}
+
+	// 스냅샷 옵션 사용 시 타임스탬프 갱신
+	if *snapshotInterval > 0 {
+		rt.mu.Lock()
+		if tb2 := rt.buffers[key]; tb2 != nil {
+			now := time.Now()
+			tb2.lastSnapshot = now
+			tb2.nextSnapshot = now.Add(*snapshotInterval)
+		}
+		rt.mu.Unlock()
 	}
 }
 
