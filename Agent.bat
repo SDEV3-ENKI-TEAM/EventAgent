@@ -11,7 +11,7 @@ start "Sigma Matcher" cmd /k "cd ""%BASEDIR%\sigma_matcher"" && sigma_matcher.e
 :: ────────────────────────────────
 :: 3. OpenTelemetry Collector
 start "OpenTelemetry Collector" cmd /k ^
-  "cd ""%BASEDIR%\otel\otelcol-contrib\otelcol-contrib"" && otelcol-contrib.exe --config otel-collector-config.yaml"
+  "cd ""%BASEDIR%\otel\otelcol-contrib\otelcol-contrib"" && otelcol-contrib.exe --config otel-collector-config-onlyjaeger.yaml"
 
 :: ────────────────────────────────
 :: 6. SysmonAgent 
