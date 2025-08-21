@@ -66,7 +66,10 @@ git clone https://github.com/shhhlee/EventAgent.git
 ./SysmonAgent.exe
 
 # 2) sigma_matcher
-./sigma_matcher.exe
+# ttl: 프로세스가 종료되지 않았을 때 트레이스 전송까지 기다릴 시간
+# spans: 초과시 트레이스 전송할 스팬 수
+# interval: ttl로 인한 트레이스 전송 이후 전송 주기
+./sigma_matcher.exe -ttl=5m -maxspans=1000 -interval=5m
 
 # 3) OTEL Collector
 압축 해제
@@ -77,9 +80,14 @@ docker compose pull
 docker‑compose up -d
 
 # 5) Kafka 토픽 생성
+# raw_trace: 프로세스 종료 후 전송된 완전 트레이스
+# tmp_trace: 프로세스 생성 후 종료될 때까지 주기적으로 수집되는 스팬 전송
 docker exec -it kafka kafka-topics --create --topic raw_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+docker exec -it kafka kafka-topics --create --topic tmp_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+
 # Kafka 실시간 데이터 확인
 docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw_trace
+docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic tmp_trace
 
 # 6) Trace API Server (FastAPI)
 cd pythonapi
@@ -101,7 +109,7 @@ git clone https://github.com/shhhlee/EventAgent.git
 cd sigma_matcher
 go mod tidy
 go build -o sigma_matcher.exe main.go
-./sigma_matcher.exe
+./sigma_matcher.exe -ttl=5m -maxspans=1000 -interval=5m
 
 # 3) OTEL Collector
 압축 해제
@@ -113,8 +121,11 @@ docker‑compose up -d
 
 # 5) Kafka 토픽 생성
 docker exec -it kafka kafka-topics --create --topic raw_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+docker exec -it kafka kafka-topics --create --topic tmp_trace --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+
 # Kafka 실시간 데이터 확인
 docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw_trace
+docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic tmp_trace
 
 # 5) Trace API Server (FastAPI)
 cd pythonapi
