@@ -27,5 +27,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 :: 6. SysmonAgent 
 set "SYSPATH=%BASEDIR%\SysmonAgent"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Start-Process cmd.exe -Verb RunAs -ArgumentList '/k cd /d \"\"%SYSPATH%\"\" & SysmonAgent.exe'"
+  "Start-Process cmd.exe -Verb RunAs -ArgumentList '/k cd /d \"\"%SYSPATH%\"\" & EventAgent.exe'"
 

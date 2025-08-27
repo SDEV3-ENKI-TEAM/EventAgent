@@ -248,7 +248,6 @@ func (rt *traceRouter) bufferSpanAndUpdatePID(
 	return false, false
 }
 
-// 최종 플러시: 4320(forward)으로 "전체 트레이스를 한 번에 전송한 뒤 버퍼/매핑 정리
 func (rt *traceRouter) flushTrace(traceID []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -256,10 +255,11 @@ func (rt *traceRouter) flushTrace(traceID []byte) {
 		}
 	}()
 
-	// 1) 먼저 tmptrace로 남은 델타를 마저 보냄
-	rt.exportTraceDelta(traceID)
+	// 1) 최종 플러시 직전, 혹시 미전송 델타가 남았으면 tmp로 보여줄지 여부
+	//    (원하면 유지, 싫으면 건너뜀)
+	// rt.exportTraceDelta(traceID)
 
-	// 2) forward로 전체(full) 트레이스 전송
+	// 2) 버퍼를 완성본으로 만들어서 한번에 final(4320)로
 	rt.mu.Lock()
 	key := hex(traceID)
 	tb := rt.buffers[key]
@@ -267,17 +267,39 @@ func (rt *traceRouter) flushTrace(traceID []byte) {
 		rt.mu.Unlock()
 		return
 	}
+	// 트레이스 완결로 간주 → activePIDs 비워두자
+	tb.activePIDs = map[int]struct{}{}
+	// 완성본 조립
+	out := assembleAllResourceSpans(tb)
+	delete(rt.buffers, key)
+	rt.mu.Unlock()
 
+	if len(out) == 0 {
+		return
+	}
+
+	req := &collectortracepb.ExportTraceServiceRequest{ResourceSpans: out}
+	if _, err := rt.client.Export(context.Background(), req); err != nil {
+		log.Printf("❌ final flush 실패 trace=%s: %v", key, err)
+		return
+	}
+	if *verbose {
+		log.Printf("✅ final flush 완료 trace=%s spans=%d", key, countSpans(out))
+	}
+
+	rt.cleanupPIDsForTrace(traceID)
+}
+
+func assembleAllResourceSpans(tb *traceBuffer) []*tracepb.ResourceSpans {
 	resKeys := make([]resKey, 0, len(tb.byResScope))
 	for rk := range tb.byResScope {
 		resKeys = append(resKeys, rk)
 	}
 	sort.Slice(resKeys, func(i, j int) bool { return resKeys[i] < resKeys[j] })
 
-	out := make([]*tracepb.ResourceSpans, 0, len(resKeys))
+	var out []*tracepb.ResourceSpans
 	for _, rk := range resKeys {
 		scopeMap := tb.byResScope[rk]
-
 		scopeKeys := make([]scopeKey, 0, len(scopeMap))
 		for sk := range scopeMap {
 			scopeKeys = append(scopeKeys, sk)
@@ -289,44 +311,25 @@ func (rt *traceRouter) flushTrace(traceID []byte) {
 			return scopeKeys[i].Name < scopeKeys[j].Name
 		})
 
-		rsp := &tracepb.ResourceSpans{}
+		rs := &tracepb.ResourceSpans{}
 		if meta := tb.resMeta[rk]; meta != nil {
-			rsp.Resource = proto.Clone(meta).(*resourcepb.Resource)
+			rs.Resource = proto.Clone(meta).(*resourcepb.Resource)
 		}
 		for _, sk := range scopeKeys {
-			all := scopeMap[sk]
-			if len(all) == 0 {
+			spans := scopeMap[sk]
+			if len(spans) == 0 {
 				continue
 			}
-
-			ss := &tracepb.ScopeSpans{
+			rs.ScopeSpans = append(rs.ScopeSpans, &tracepb.ScopeSpans{
 				Scope: tb.scopeMeta[sk],
-				Spans: make([]*tracepb.Span, len(all)),
-			}
-			copy(ss.Spans, all)
-			rsp.ScopeSpans = append(rsp.ScopeSpans, ss)
+				Spans: spans,
+			})
 		}
-		if len(rsp.ScopeSpans) > 0 {
-			out = append(out, rsp)
+		if len(rs.ScopeSpans) > 0 {
+			out = append(out, rs)
 		}
 	}
-	total := tb.spanCount
-	rt.mu.Unlock()
-
-	if len(out) > 0 {
-		req := &collectortracepb.ExportTraceServiceRequest{ResourceSpans: out}
-		if _, err := rt.client.Export(context.Background(), req); err != nil {
-			log.Printf("❌ final export 실패 trace=%s → forward: %v", key, err)
-		} else if *verbose {
-			log.Printf("✅ final export 완료 trace=%s → forward (spans=%d)", key, total)
-		}
-	}
-
-	// 3) 버퍼/매핑 정리
-	rt.mu.Lock()
-	delete(rt.buffers, key)
-	rt.mu.Unlock()
-	rt.cleanupPIDsForTrace(traceID)
+	return out
 }
 
 func (rt *traceRouter) cleanupPIDsForTrace(traceID []byte) {
@@ -418,10 +421,16 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		}
 		return
 	}
+
+	// 새 스팬 계산(워터마크 방식은 기존 그대로)
 	if tb.exported == nil {
 		tb.exported = make(map[resKey]map[scopeKey]int)
 	}
 
+	// 미완 여부 판단: activePIDs가 하나라도 있으면 '미완'
+	incomplete := len(tb.activePIDs) > 0
+
+	// Resource/Scope별 델타 수집
 	resKeys := make([]resKey, 0, len(tb.byResScope))
 	for rk := range tb.byResScope {
 		resKeys = append(resKeys, rk)
@@ -431,7 +440,6 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 	out := make([]*tracepb.ResourceSpans, 0, len(resKeys))
 	for _, rk := range resKeys {
 		scopeMap := tb.byResScope[rk]
-
 		scopeKeys := make([]scopeKey, 0, len(scopeMap))
 		for sk := range scopeMap {
 			scopeKeys = append(scopeKeys, sk)
@@ -447,6 +455,7 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		if meta := tb.resMeta[rk]; meta != nil {
 			rsp.Resource = proto.Clone(meta).(*resourcepb.Resource)
 		}
+
 		for _, sk := range scopeKeys {
 			all := scopeMap[sk]
 			if len(all) == 0 {
@@ -474,11 +483,13 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 
 			tb.exported[rk][sk] = len(all)
 		}
+
 		if len(rsp.ScopeSpans) > 0 {
 			out = append(out, rsp)
 		}
 	}
-	rt.mu.Unlock()
+
+	rt.mu.Unlock() // 네트워크 호출은 락 밖에서
 
 	if len(out) == 0 {
 		if *verbose {
@@ -486,16 +497,27 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		}
 		return
 	}
+
+	// ★★★★★ 여기서 라우팅 ★★★★★
+	// 미완 → tmpClient(4321, Jaeger 파이프라인) / 완결 델타 → final(보통 필요 없음)
+	// 델타는 '스냅샷 가시화' 목적이므로 일반적으로 tmp로 보낸다.
+	var cli collectortracepb.TraceServiceClient
+	if incomplete {
+		cli = rt.tmpClient
+	} else {
+		cli = rt.client // 완결 델타라도 최종 직전 한 번 더 보여주고 싶으면 tmp로 유지 가능
+	}
+
 	req := &collectortracepb.ExportTraceServiceRequest{ResourceSpans: out}
-	if _, err := rt.tmpClient.Export(context.Background(), req); err != nil {
-		log.Printf("❌ delta export 실패 trace=%s → tmptrace: %v", key, err)
+	if _, err := cli.Export(context.Background(), req); err != nil {
+		log.Printf("❌ delta export 실패 trace=%s (incomplete=%v): %v", key, incomplete, err)
 		return
 	}
 	if *verbose {
-		log.Printf("✅ delta export 완료 trace=%s → tmptrace", key)
+		log.Printf("✅ delta export 완료 trace=%s spans=%d incomplete=%v", key, countSpans(out), incomplete)
 	}
 
-	// 스냅샷 옵션 사용 시 타임스탬프 갱신
+	// 스냅샷 주기 갱신
 	if *snapshotInterval > 0 {
 		rt.mu.Lock()
 		if tb2 := rt.buffers[key]; tb2 != nil {
@@ -505,6 +527,16 @@ func (rt *traceRouter) exportTraceDelta(traceID []byte) {
 		}
 		rt.mu.Unlock()
 	}
+}
+
+func countSpans(rss []*tracepb.ResourceSpans) int {
+	n := 0
+	for _, rs := range rss {
+		for _, ss := range rs.ScopeSpans {
+			n += len(ss.Spans)
+		}
+	}
+	return n
 }
 
 /* ─── 계층 재작성 ─────────────────────────────────────── */
@@ -535,42 +567,172 @@ func (rt *traceRouter) rewriteSpan(sp *tracepb.Span) {
 		info.ppid = ppid
 		rt.procs[pid] = info
 
-		tb := rt.buffers[hex(info.traceID)]
-		if tb == nil {
-			tb = &traceBuffer{
-				byResScope:     make(map[resKey]map[scopeKey][]*tracepb.Span),
-				resMeta:        make(map[resKey]*resourcepb.Resource),
-				scopeMeta:      make(map[scopeKey]*commonpb.InstrumentationScope),
-				firstSeen:      time.Now(),
-				activePIDs:     make(map[int]struct{}),
-				terminatedPIDs: make(map[int]struct{}),
-				exported:       make(map[resKey]map[scopeKey]int),
-			}
-			rt.buffers[hex(info.traceID)] = tb
-		}
-		if info.root && tb.rootPID == 0 {
-			tb.rootPID = pid
+		// traceBuffer 준비
+		if rt.buffers[hex(info.traceID)] == nil {
+			rt.buffers[hex(info.traceID)] = newTraceBuffer()
 		}
 	}
 
 	// 루트 스팬 중복 방지
 	if isRootName {
 		if len(info.spanID) != 0 && !bytes.Equal(info.spanID, sp.SpanId) {
-			return
+			// 중복 루트 무시
+		} else {
+			info.spanID = sp.SpanId
+			rt.procs[pid] = info
 		}
-		info.spanID = sp.SpanId
-		rt.procs[pid] = info
 	}
 
-	// 부모 연결
+	// ── 부모가 이제 보이는 순간: 소급 연결 + 필요 시 Trace 병합 ──
 	if pInfo, ok := rt.procs[ppid]; ok && ppid != 0 && pid != ppid {
+		// ① 원본 스팬에 즉시 부모 연결/TraceID 상속
 		sp.ParentSpanId = pInfo.spanID
+
+		// 자식이 '부모 미상'으로 시작했었고, traceID가 다르면 → Trace 병합 필요
+		if info.root && !bytes.Equal(info.traceID, pInfo.traceID) {
+			childTID := append([]byte(nil), info.traceID...) // copy
+			parentTID := append([]byte(nil), pInfo.traceID...)
+			// Trace 병합(자식→부모), 자식 traceID 소속 스팬/메타 전부 부모 trace로 이동
+			rt.stitchTraceBuffersLocked(childTID, parentTID)
+
+			// 자식 프로세스의 traceID도 부모로 갱신
+			info.traceID = pInfo.traceID
+			info.root = false
+			rt.procs[pid] = info
+		}
+
+		// ② 버퍼 내 과거 스팬들 소급 리링크(ParentSpanId 채움)
+		rt.retroLinkInBufferLocked(info.traceID, pid, pInfo.spanID)
+
+		// 항상 최종 TraceID는 부모의 것으로 맞춘다
+		sp.TraceId = pInfo.traceID
+	} else {
+		// 부모 모르면 기존 traceID 유지
+		sp.TraceId = info.traceID
 	}
-	sp.TraceId = info.traceID
 
 	if *verbose {
 		fmt.Printf("rewrite pid=%d ppid=%d trace=%x\n", pid, ppid, sp.TraceId)
 	}
+}
+
+func (rt *traceRouter) retroLinkInBufferLocked(traceID []byte, pid int, parentSpanID []byte) {
+	key := hex(traceID)
+	tb := rt.buffers[key]
+	if tb == nil {
+		return
+	}
+	// byResScope 전체를 훑으며 'pid'가 동일한 스팬 중 ParentSpanId가 비어있는 것 보정
+	for _, scopeMap := range tb.byResScope {
+		for sk, spans := range scopeMap {
+			changed := false
+			for _, sp := range spans {
+				// 안전장치: traceID 불일치 스팬은 건너뜀
+				if !bytes.Equal(sp.TraceId, traceID) {
+					continue
+				}
+				// sysmon.pid 태그 확인
+				evPID := extractIntAttrFromSpan(sp, "sysmon.pid", "pid", "ProcessId")
+				if evPID == pid && len(sp.ParentSpanId) == 0 {
+					sp.ParentSpanId = append([]byte(nil), parentSpanID...)
+					changed = true
+				}
+			}
+			// 소급으로 parent 보정해도 exported 워터마크는 그대로 두면 됨(동일 스팬 인플레이스 수정)
+			if changed && rt.buffers[key].exported != nil {
+				// 아무 것도 하지 않음: 이미 내보낸 스팬도 parent가 채워진 상태로 이후 전송될 수 있음(최종 flush 시)
+				_ = sk
+			}
+		}
+	}
+}
+
+// ─── Trace 병합: childTrace → parentTrace ─────────────────────────────
+func (rt *traceRouter) stitchTraceBuffersLocked(childTID, parentTID []byte) {
+	childKey := hex(childTID)
+	parentKey := hex(parentTID)
+
+	child := rt.buffers[childKey]
+	parent := rt.buffers[parentKey]
+
+	if child == nil {
+		return
+	}
+	if parent == nil {
+		// 부모 버퍼가 아직 없으면 만들어 둔다
+		parent = newTraceBuffer()
+		rt.buffers[parentKey] = parent
+	}
+
+	// 1) 메타(리소스/스코프) 병합
+	for rk, res := range child.resMeta {
+		if parent.resMeta[rk] == nil && res != nil {
+			parent.resMeta[rk] = proto.Clone(res).(*resourcepb.Resource)
+		}
+	}
+	for sk, sc := range child.scopeMeta {
+		if parent.scopeMeta[sk] == nil && sc != nil {
+			parent.scopeMeta[sk] = proto.Clone(sc).(*commonpb.InstrumentationScope)
+		}
+	}
+
+	// 2) 스팬 붙이기(TraceId 덮어쓰기 후 append)
+	for rk, scopeMap := range child.byResScope {
+		if parent.byResScope[rk] == nil {
+			parent.byResScope[rk] = make(map[scopeKey][]*tracepb.Span)
+		}
+		for sk, spans := range scopeMap {
+			// child spans의 TraceId를 parent로 변경
+			for _, sp := range spans {
+				sp.TraceId = append(sp.TraceId[:0], parentTID...) // overwrite
+			}
+			parent.byResScope[rk][sk] = append(parent.byResScope[rk][sk], spans...)
+			parent.spanCount += len(spans)
+		}
+	}
+
+	// 3) 부모 버퍼의 워터마크(exported)는 'append 이후'에도 안전
+	//    child 쪽 워터마크는 폐기하고, child 버퍼 제거
+	delete(rt.buffers, childKey)
+
+	// 4) 이 traceID(childTID)에 매핑된 procInfo들도 parentTID로 교체
+	for pid, pinfo := range rt.procs {
+		if bytes.Equal(pinfo.traceID, childTID) {
+			pinfo.traceID = parentTID
+			rt.procs[pid] = pinfo
+		}
+	}
+}
+
+func newTraceBuffer() *traceBuffer {
+	return &traceBuffer{
+		byResScope:     make(map[resKey]map[scopeKey][]*tracepb.Span),
+		resMeta:        make(map[resKey]*resourcepb.Resource),
+		scopeMeta:      make(map[scopeKey]*commonpb.InstrumentationScope),
+		firstSeen:      time.Now(),
+		activePIDs:     make(map[int]struct{}),
+		terminatedPIDs: make(map[int]struct{}),
+		exported:       make(map[resKey]map[scopeKey]int),
+	}
+}
+
+// 스팬 객체에서 숫자 속성 읽기 (retroLinkInBufferLocked용)
+func extractIntAttrFromSpan(sp *tracepb.Span, keys ...string) int {
+	for _, kv := range sp.Attributes {
+		for _, k := range keys {
+			if kv.Key == k {
+				switch v := kv.Value.Value.(type) {
+				case *commonpb.AnyValue_StringValue:
+					if p, err := strconv.Atoi(v.StringValue); err == nil {
+						return p
+					}
+				case *commonpb.AnyValue_IntValue:
+					return int(v.IntValue)
+				}
+			}
+		}
+	}
+	return 0
 }
 
 /* ─── Sigma 매칭 + 표시 ──────────────────────────────── */
