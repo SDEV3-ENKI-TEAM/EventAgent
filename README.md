@@ -118,6 +118,9 @@ go build -o sigma_matcher.exe main.go
 압축 해제
 otelcol-contrib --config otel-collector-config.yaml
 
+# 정상까지 수집
+otelcol-contrib.exe --config otel-collector-config-onlyjaeger-nofilter.yaml
+
 # 4) Docker 기반 서비스 실행 (Kafka, Jaeger, OpenSearch)
 docker compose pull
 docker‑compose up -d
